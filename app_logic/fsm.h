@@ -23,6 +23,7 @@ typedef enum
     EVT_CLEAN_START,
     EVT_CLEAN_DONE,
     EVT_PROTECT_TRIGGER,
+    EVT_PROTECT_RELEASE,
     EVT_STALL_OR_TIMEOUT,
     EVT_BIN_FULL,
     EVT_RESET,
@@ -60,7 +61,7 @@ typedef struct
     rt_tick_t deadline_tick;
     rt_bool_t occupied;
     rt_bool_t bin_full;
-    rt_bool_t protect_triggered;
+    rt_bool_t protect_active;
     rt_bool_t cleaning_active;
     litter_clean_phase_t clean_phase;
     int fault_code;
@@ -76,10 +77,11 @@ void litter_fsm_init(litter_fsm_ctx_t *ctx, const litter_fsm_ops_t *ops);
 void litter_fsm_sync_inputs(litter_fsm_ctx_t *ctx,
                             rt_bool_t occupied,
                             rt_bool_t bin_full,
-                            rt_bool_t protect_triggered);
+                            rt_bool_t protect_active);
 void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event);
 void litter_fsm_tick(litter_fsm_ctx_t *ctx);
 litter_fsm_state_t litter_fsm_get_state(const litter_fsm_ctx_t *ctx);
+int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx);
 const char *litter_fsm_state_name(litter_fsm_state_t state);
 const char *litter_fsm_event_name(litter_fsm_event_t event);
 

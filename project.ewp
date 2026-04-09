@@ -1987,6 +1987,9 @@
       <name>$PROJ_DIR$\app_logic\logic.c</name>
     </file>
     <file>
+      <name>$PROJ_DIR$\app_logic\fsm.c</name>
+    </file>
+    <file>
       <name>$PROJ_DIR$\app_logic\mqtt.c</name>
     </file>
   </group>

@@ -29,9 +29,21 @@
 extern rt_uint32_t hum, tem;
 extern int cur_weight;
 extern int box_used;
+static rt_bool_t g_mqtt_link_online = RT_FALSE;
+
 char DEMO_PRODUCT_KEY[IOTX_PRODUCT_KEY_LEN + 1] = {0};
 char DEMO_DEVICE_NAME[IOTX_DEVICE_NAME_LEN + 1] = {0};
 char DEMO_DEVICE_SECRET[IOTX_DEVICE_SECRET_LEN + 1] = {0};
+
+void mqtt_set_link_state(rt_bool_t online)
+{
+    g_mqtt_link_online = online;
+}
+
+rt_bool_t mqtt_is_link_online(void)
+{
+    return g_mqtt_link_online;
+}
 
 static int payload_contains(const char *payload, int payload_len, const char *token)
 {
@@ -124,6 +136,7 @@ int example_subscribe(void *handle)
     }
 
     HAL_Free(topic);
+    mqtt_set_link_state(RT_TRUE);
     return 0;
 }
 
@@ -174,7 +187,8 @@ void example_event_handle(void *pcontext, void *pclient, iotx_mqtt_event_msg_pt 
 
     if (msg->event_type == IOTX_MQTT_EVENT_DISCONNECT)
     {
-        Sensor_Logic_RequestReset();
+        mqtt_set_link_state(RT_FALSE);
+        EXAMPLE_TRACE("mqtt link offline, local fsm keeps running");
     }
 }
 

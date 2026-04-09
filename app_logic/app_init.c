@@ -229,6 +229,8 @@ static void Mqtt_Task(void *parameter)
     int                     loop_cnt = 0;
     iotx_mqtt_param_t       mqtt_params;
 
+    RT_UNUSED(parameter);
+
     HAL_GetProductKey(DEMO_PRODUCT_KEY);
     HAL_GetDeviceName(DEMO_DEVICE_NAME);
     HAL_GetDeviceSecret(DEMO_DEVICE_SECRET);
@@ -244,6 +246,7 @@ static void Mqtt_Task(void *parameter)
         pclient = IOT_MQTT_Construct(&mqtt_params);
         if (NULL == pclient)
         {
+            mqtt_set_link_state(RT_FALSE);
             EXAMPLE_TRACE("MQTT construct failed, retry later");
             rt_thread_mdelay(2000);
             continue;
@@ -252,6 +255,7 @@ static void Mqtt_Task(void *parameter)
         res = example_subscribe(pclient);
         if (res < 0)
         {
+            mqtt_set_link_state(RT_FALSE);
             EXAMPLE_TRACE("MQTT subscribe failed, reconnect");
             IOT_MQTT_Destroy(&pclient);
             rt_thread_mdelay(2000);
@@ -269,6 +273,7 @@ static void Mqtt_Task(void *parameter)
             res = IOT_MQTT_Yield(pclient, 200);
             if (res < 0)
             {
+                mqtt_set_link_state(RT_FALSE);
                 EXAMPLE_TRACE("MQTT yield failed, reconnect");
                 IOT_MQTT_Destroy(&pclient);
                 break;

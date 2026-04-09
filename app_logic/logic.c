@@ -103,6 +103,9 @@ void access_Sensor(void)
 
 void Sensor_Logic_Init(void)
 {
+    rt_bool_t occupied_now;
+    rt_bool_t bin_full_now;
+
     if (g_logic_ready == RT_TRUE)
     {
         return;
@@ -114,11 +117,24 @@ void Sensor_Logic_Init(void)
     rt_pin_mode(BUZZER, PIN_MODE_OUTPUT);
     rt_pin_mode(O3, PIN_MODE_OUTPUT);
 
+    occupied_now = logic_is_occupied();
+    bin_full_now = logic_is_bin_full();
+
     litter_fsm_init(&g_fsm_ctx, &g_fsm_ops);
 
-    litter_fsm_sync_inputs(&g_fsm_ctx, logic_is_occupied(), logic_is_bin_full(), RT_FALSE);
-    g_prev_occupied = RT_FALSE;
-    g_prev_bin_full = RT_FALSE;
+    litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, occupied_now);
+    g_prev_occupied = occupied_now;
+    g_prev_bin_full = bin_full_now;
+
+    if (occupied_now == RT_TRUE)
+    {
+        litter_fsm_dispatch(&g_fsm_ctx, EVT_OCCUPIED_ON);
+    }
+
+    if (bin_full_now == RT_TRUE)
+    {
+        litter_fsm_dispatch(&g_fsm_ctx, EVT_BIN_FULL);
+    }
 
     g_logic_ready = RT_TRUE;
 }
@@ -158,9 +174,19 @@ void Sensor_Logic_RequestReset(void)
     rt_kprintf("[LOGIC] reset request queued\r\n");
 }
 
+litter_fsm_state_t Sensor_Logic_GetState(void)
+{
+    return litter_fsm_get_state(&g_fsm_ctx);
+}
+
+int Sensor_Logic_GetFaultCode(void)
+{
+    return litter_fsm_get_fault_code(&g_fsm_ctx);
+}
+
 const char *Sensor_Logic_StateName(void)
 {
-    return litter_fsm_state_name(litter_fsm_get_state(&g_fsm_ctx));
+    return litter_fsm_state_name(Sensor_Logic_GetState());
 }
 
 /* sensor control logic */
@@ -179,7 +205,7 @@ void Sensor_Logic_Running(void)
     occupied_now = logic_is_occupied();
     bin_full_now = logic_is_bin_full();
     current_state = litter_fsm_get_state(&g_fsm_ctx);
-    protect_now = ((current_state == FSM_STATE_CLEANING) && (occupied_now == RT_TRUE)) ? RT_TRUE : RT_FALSE;
+    protect_now = occupied_now;
 
     litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, protect_now);
 

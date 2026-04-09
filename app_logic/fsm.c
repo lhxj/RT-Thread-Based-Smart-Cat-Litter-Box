@@ -43,7 +43,6 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
     case FSM_STATE_IDLE:
         ctx->clean_phase = FSM_CLEAN_PHASE_NONE;
         ctx->cleaning_active = RT_FALSE;
-        ctx->protect_triggered = RT_FALSE;
         ctx->fault_code = FSM_FAULT_NONE;
         fsm_motor_stop(ctx);
         break;
@@ -70,7 +69,6 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
 
     case FSM_STATE_CLEANING:
         ctx->cleaning_active = RT_TRUE;
-        ctx->protect_triggered = RT_FALSE;
         ctx->clean_started_tick = now;
         ctx->phase_started_tick = now;
         ctx->clean_phase = FSM_CLEAN_PHASE_FORWARD;
@@ -142,7 +140,7 @@ void litter_fsm_init(litter_fsm_ctx_t *ctx, const litter_fsm_ops_t *ops)
 void litter_fsm_sync_inputs(litter_fsm_ctx_t *ctx,
                             rt_bool_t occupied,
                             rt_bool_t bin_full,
-                            rt_bool_t protect_triggered)
+                            rt_bool_t protect_active)
 {
     if (ctx == RT_NULL)
     {
@@ -151,7 +149,7 @@ void litter_fsm_sync_inputs(litter_fsm_ctx_t *ctx,
 
     ctx->occupied = occupied;
     ctx->bin_full = bin_full;
-    ctx->protect_triggered = protect_triggered;
+    ctx->protect_active = protect_active;
 }
 
 void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
@@ -183,12 +181,16 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         return;
 
     case EVT_PROTECT_TRIGGER:
-        ctx->protect_triggered = RT_TRUE;
+        ctx->protect_active = RT_TRUE;
         if (ctx->state != FSM_STATE_FAULT)
         {
             fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
         }
         return;
+
+    case EVT_PROTECT_RELEASE:
+        ctx->protect_active = RT_FALSE;
+        break;
 
     case EVT_STALL_OR_TIMEOUT:
         ctx->fault_code = FSM_FAULT_CLEAN_TIMEOUT;
@@ -212,7 +214,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
             {
                 fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
             }
-            else if (ctx->bin_full == RT_FALSE)
+            else if ((ctx->bin_full == RT_FALSE) && (ctx->protect_active == RT_FALSE))
             {
                 fsm_enter_state(ctx, FSM_STATE_CLEANING);
             }
@@ -248,7 +250,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         }
         else if ((event == EVT_DELAY_TIMEOUT) || (event == EVT_CLEAN_START))
         {
-            if (ctx->bin_full == RT_FALSE)
+            if ((ctx->bin_full == RT_FALSE) && (ctx->protect_active == RT_FALSE))
             {
                 fsm_enter_state(ctx, FSM_STATE_CLEANING);
             }
@@ -275,18 +277,31 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         break;
 
     case FSM_STATE_SAFE_STOP:
-        if (event == EVT_OCCUPIED_OFF)
+        if (event == EVT_PROTECT_RELEASE)
         {
-            fsm_enter_state(ctx, FSM_STATE_LEAVE_CONFIRM);
+            if (ctx->occupied == RT_TRUE)
+            {
+                fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
+            }
+            else
+            {
+                fsm_enter_state(ctx, FSM_STATE_LEAVE_CONFIRM);
+            }
         }
-        else if ((event == EVT_RESET) && (ctx->occupied == RT_FALSE) && (ctx->bin_full == RT_FALSE))
+        else if ((event == EVT_RESET) &&
+                 (ctx->occupied == RT_FALSE) &&
+                 (ctx->bin_full == RT_FALSE) &&
+                 (ctx->protect_active == RT_FALSE))
         {
             fsm_enter_state(ctx, FSM_STATE_IDLE);
         }
         break;
 
     case FSM_STATE_FAULT:
-        if ((event == EVT_RESET) && (ctx->occupied == RT_FALSE) && (ctx->bin_full == RT_FALSE))
+        if ((event == EVT_RESET) &&
+            (ctx->occupied == RT_FALSE) &&
+            (ctx->bin_full == RT_FALSE) &&
+            (ctx->protect_active == RT_FALSE))
         {
             fsm_enter_state(ctx, FSM_STATE_IDLE);
         }
@@ -317,9 +332,15 @@ void litter_fsm_tick(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    if ((ctx->state == FSM_STATE_CLEANING) && (ctx->protect_triggered == RT_TRUE))
+    if ((ctx->state == FSM_STATE_CLEANING) && (ctx->protect_active == RT_TRUE))
     {
         litter_fsm_dispatch(ctx, EVT_PROTECT_TRIGGER);
+        return;
+    }
+
+    if ((ctx->state == FSM_STATE_SAFE_STOP) && (ctx->protect_active == RT_FALSE))
+    {
+        litter_fsm_dispatch(ctx, EVT_PROTECT_RELEASE);
         return;
     }
 
@@ -377,6 +398,16 @@ litter_fsm_state_t litter_fsm_get_state(const litter_fsm_ctx_t *ctx)
     return ctx->state;
 }
 
+int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return FSM_FAULT_NONE;
+    }
+
+    return ctx->fault_code;
+}
+
 const char *litter_fsm_state_name(litter_fsm_state_t state)
 {
     switch (state)
@@ -416,6 +447,8 @@ const char *litter_fsm_event_name(litter_fsm_event_t event)
         return "EVT_CLEAN_DONE";
     case EVT_PROTECT_TRIGGER:
         return "EVT_PROTECT_TRIGGER";
+    case EVT_PROTECT_RELEASE:
+        return "EVT_PROTECT_RELEASE";
     case EVT_STALL_OR_TIMEOUT:
         return "EVT_STALL_OR_TIMEOUT";
     case EVT_BIN_FULL:
