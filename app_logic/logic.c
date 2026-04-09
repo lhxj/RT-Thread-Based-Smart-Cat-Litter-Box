@@ -5,115 +5,231 @@
  *
  * Change Logs:
  * Date           Author       Notes
- * 2022-08-01     ywx       the first version
+ * 2022-08-01     ywx          the first version
  */
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
 
 #include "logic.h"
+#include "fsm.h"
 #include "sensor.h"
 #include "drv_gpio.h"
 
 int rt_hw_dht11_init(const char *name, struct rt_sensor_config *cfg);
 
-rt_adc_device_t adc_dev;
-
-rt_uint32_t cur_hum, cur_tem;
-extern rt_uint32_t hum, tem;
-
 /* mailboxes */
 extern struct rt_mailbox tem_mb;
 extern struct rt_mailbox hum_mb;
-/* mailbox memory pools */
-extern char mb_hum_pool[128];
-extern char mb_tem_pool[128];
 
-#define LED0_PIN GET_PIN(D, 3)
-#define LED1_PIN GET_PIN(D, 4)
-#define LED2_PIN GET_PIN(D, 5)
-#define LED3_PIN GET_PIN(D, 6)
 #define HONGWAI_PIN GET_PIN(E, 2)
-/*define motor pin*/
 #define IN1 GET_PIN(D, 8)
 #define IN2 GET_PIN(D, 9)
-
-/*define WATER_PUMP pin*/
 #define BUZZER GET_PIN(D, 11)
 #define O3 GET_PIN(D, 10)
-
 #define DHT11_DATA_PIN GET_PIN(E, 10)
 
-#define TEM_MAX 33
-#define HUM_MIN 70
+#define BIN_FULL_WEIGHT_THRESHOLD 500
+
+static rt_uint32_t cur_hum;
+static rt_uint32_t cur_tem;
+static rt_bool_t g_logic_ready = RT_FALSE;
+static rt_bool_t g_prev_occupied = RT_FALSE;
+static rt_bool_t g_prev_bin_full = RT_FALSE;
+static rt_bool_t g_remote_clean_request = RT_FALSE;
+static rt_bool_t g_reset_request = RT_FALSE;
+static litter_fsm_ctx_t g_fsm_ctx;
+
+extern int cur_weight;
 
 int box_used = 0;
-extern int cur_weight;
-extern int flag;
-/* sensor control logic */
-void Sensor_Logic_Running(void)
+
+static rt_bool_t logic_is_occupied(void)
 {
-    int remote_trigger = (flag == 1);
-
-    rt_mb_recv(&hum_mb, (rt_uint32_t *)&cur_hum, RT_WAITING_FOREVER);
-    rt_mb_recv(&tem_mb, (rt_uint32_t *)&cur_tem, RT_WAITING_FOREVER);
-
-
-
-    if(cur_weight >= 500){
-            rt_pin_write(O3, PIN_HIGH);
-            rt_pin_write(BUZZER, PIN_HIGH);
-            rt_thread_mdelay(500);
-            rt_pin_write(BUZZER, PIN_LOW);
-            rt_thread_mdelay(500);
-            rt_pin_write(BUZZER, PIN_HIGH);
-            rt_thread_mdelay(500);
-            rt_pin_write(BUZZER, PIN_LOW);
-            rt_thread_mdelay(500);
-            rt_pin_write(BUZZER, PIN_HIGH);
-            rt_thread_mdelay(500);
-            rt_pin_write(BUZZER, PIN_LOW);
-            rt_thread_mdelay(500);
-
-            rt_pin_write(BUZZER, PIN_LOW);
-            rt_thread_mdelay(3000);
-            rt_pin_write(O3, PIN_LOW);
-        }
-
-        if(rt_pin_read(HONGWAI_PIN) == 0 || remote_trigger){
-            rt_thread_mdelay(50);
-            if((rt_pin_read(HONGWAI_PIN) == 0 || remote_trigger)){
-                rt_kprintf("The cat is here!\n");
-                if (remote_trigger)
-                {
-                    flag = 0;
-                }
-                box_used++;
-                rt_thread_mdelay(5000);
-                rt_pin_write(IN1, PIN_LOW);
-                rt_pin_write(IN2, PIN_HIGH);
-                rt_thread_mdelay(10000);
-                rt_pin_write(IN1, PIN_HIGH);
-                rt_pin_write(IN2, PIN_LOW);
-                rt_thread_mdelay(10000);
-                rt_pin_write(IN1, PIN_LOW);
-                rt_pin_write(IN2, PIN_LOW);
-            }
-            }
-
-
-
+    return (rt_pin_read(HONGWAI_PIN) == PIN_LOW) ? RT_TRUE : RT_FALSE;
 }
+
+static rt_bool_t logic_is_bin_full(void)
+{
+    return (cur_weight >= BIN_FULL_WEIGHT_THRESHOLD) ? RT_TRUE : RT_FALSE;
+}
+
+static void logic_motor_forward_start(void)
+{
+    rt_pin_write(IN1, PIN_LOW);
+    rt_pin_write(IN2, PIN_HIGH);
+    rt_kprintf("[ACT] motor forward\r\n");
+}
+
+static void logic_motor_reverse_start(void)
+{
+    rt_pin_write(IN1, PIN_HIGH);
+    rt_pin_write(IN2, PIN_LOW);
+    rt_kprintf("[ACT] motor reverse\r\n");
+}
+
+static void logic_motor_stop(void)
+{
+    rt_pin_write(IN1, PIN_LOW);
+    rt_pin_write(IN2, PIN_LOW);
+    rt_pin_write(BUZZER, PIN_LOW);
+    rt_pin_write(O3, PIN_LOW);
+    rt_kprintf("[ACT] motor stop\r\n");
+}
+
+static void logic_fault_handler(int fault_code)
+{
+    rt_pin_write(BUZZER, PIN_LOW);
+    rt_pin_write(O3, PIN_LOW);
+    rt_kprintf("[LOGIC] fault latched=%d\r\n", fault_code);
+}
+
+static const litter_fsm_ops_t g_fsm_ops =
+{
+    .motor_forward_start = logic_motor_forward_start,
+    .motor_reverse_start = logic_motor_reverse_start,
+    .motor_stop = logic_motor_stop,
+    .on_fault = logic_fault_handler,
+};
 
 /* initialize sensors */
 void access_Sensor(void)
 {
-    //DHT11
     struct rt_sensor_config cfg;
+
     cfg.intf.user_data = (void *)DHT11_DATA_PIN;
     rt_hw_dht11_init("dht11", &cfg);
-
-
 }
 
+void Sensor_Logic_Init(void)
+{
+    if (g_logic_ready == RT_TRUE)
+    {
+        return;
+    }
 
+    rt_pin_mode(HONGWAI_PIN, PIN_MODE_INPUT);
+    rt_pin_mode(IN1, PIN_MODE_OUTPUT);
+    rt_pin_mode(IN2, PIN_MODE_OUTPUT);
+    rt_pin_mode(BUZZER, PIN_MODE_OUTPUT);
+    rt_pin_mode(O3, PIN_MODE_OUTPUT);
+
+    litter_fsm_init(&g_fsm_ctx, &g_fsm_ops);
+
+    litter_fsm_sync_inputs(&g_fsm_ctx, logic_is_occupied(), logic_is_bin_full(), RT_FALSE);
+    g_prev_occupied = RT_FALSE;
+    g_prev_bin_full = RT_FALSE;
+
+    g_logic_ready = RT_TRUE;
+}
+
+void Sensor_Logic_UpdateInputs(void)
+{
+    rt_ubase_t mb_value;
+
+    if (g_logic_ready == RT_FALSE)
+    {
+        Sensor_Logic_Init();
+    }
+
+    if (rt_mb_recv(&tem_mb, &mb_value, RT_WAITING_NO) == RT_EOK)
+    {
+        cur_tem = (rt_uint32_t)mb_value;
+    }
+
+    if (rt_mb_recv(&hum_mb, &mb_value, RT_WAITING_NO) == RT_EOK)
+    {
+        cur_hum = (rt_uint32_t)mb_value;
+    }
+
+    RT_UNUSED(cur_tem);
+    RT_UNUSED(cur_hum);
+}
+
+void Sensor_Logic_RequestClean(void)
+{
+    g_remote_clean_request = RT_TRUE;
+    rt_kprintf("[LOGIC] clean request queued\r\n");
+}
+
+void Sensor_Logic_RequestReset(void)
+{
+    g_reset_request = RT_TRUE;
+    rt_kprintf("[LOGIC] reset request queued\r\n");
+}
+
+const char *Sensor_Logic_StateName(void)
+{
+    return litter_fsm_state_name(litter_fsm_get_state(&g_fsm_ctx));
+}
+
+/* sensor control logic */
+void Sensor_Logic_Running(void)
+{
+    litter_fsm_state_t current_state;
+    rt_bool_t occupied_now;
+    rt_bool_t bin_full_now;
+    rt_bool_t protect_now;
+
+    if (g_logic_ready == RT_FALSE)
+    {
+        Sensor_Logic_Init();
+    }
+
+    occupied_now = logic_is_occupied();
+    bin_full_now = logic_is_bin_full();
+    current_state = litter_fsm_get_state(&g_fsm_ctx);
+    protect_now = ((current_state == FSM_STATE_CLEANING) && (occupied_now == RT_TRUE)) ? RT_TRUE : RT_FALSE;
+
+    litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, protect_now);
+
+    if ((bin_full_now == RT_TRUE) && (g_prev_bin_full == RT_FALSE))
+    {
+        litter_fsm_dispatch(&g_fsm_ctx, EVT_BIN_FULL);
+    }
+
+    current_state = litter_fsm_get_state(&g_fsm_ctx);
+    if (current_state != FSM_STATE_FAULT)
+    {
+        if (occupied_now != g_prev_occupied)
+        {
+            if (occupied_now == RT_TRUE)
+            {
+                if (current_state == FSM_STATE_IDLE)
+                {
+                    box_used++;
+                }
+
+                if (current_state == FSM_STATE_CLEANING)
+                {
+                    litter_fsm_dispatch(&g_fsm_ctx, EVT_PROTECT_TRIGGER);
+                }
+                else
+                {
+                    litter_fsm_dispatch(&g_fsm_ctx, EVT_OCCUPIED_ON);
+                }
+            }
+            else
+            {
+                litter_fsm_dispatch(&g_fsm_ctx, EVT_OCCUPIED_OFF);
+            }
+        }
+
+        if (g_remote_clean_request == RT_TRUE)
+        {
+            g_remote_clean_request = RT_FALSE;
+            litter_fsm_dispatch(&g_fsm_ctx, EVT_CLEAN_START);
+        }
+    }
+
+    if (g_reset_request == RT_TRUE)
+    {
+        g_reset_request = RT_FALSE;
+        litter_fsm_dispatch(&g_fsm_ctx, EVT_RESET);
+    }
+
+    litter_fsm_tick(&g_fsm_ctx);
+
+    g_prev_occupied = occupied_now;
+    g_prev_bin_full = bin_full_now;
+}

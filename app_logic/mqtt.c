@@ -20,19 +20,15 @@
 #include "dev_sign_api.h"
 #include "mqtt_api.h"
 #include "mqtt.h"
+#include "logic.h"
 #include <rtdevice.h>
 #include <board.h>
 #include "rtconfig.h"
 #include <string.h>
 
-int flag = 0;
-
 extern rt_uint32_t hum, tem;
 extern int cur_weight;
 extern int box_used;
-#define IN1 GET_PIN(D, 8)
-#define IN2 GET_PIN(D, 9)
-#define BUZZER GET_PIN(D, 11)
 char DEMO_PRODUCT_KEY[IOTX_PRODUCT_KEY_LEN + 1] = {0};
 char DEMO_DEVICE_NAME[IOTX_DEVICE_NAME_LEN + 1] = {0};
 char DEMO_DEVICE_SECRET[IOTX_DEVICE_SECRET_LEN + 1] = {0};
@@ -70,16 +66,14 @@ static void handle_remote_control(const iotx_mqtt_topic_info_t *topic_info)
         payload_contains(payload, payload_len, "\"clean_now\":1") ||
         payload_contains(payload, payload_len, "\"flag\":1"))
     {
-        flag = 1;
+        Sensor_Logic_RequestClean();
         EXAMPLE_TRACE("remote clean command accepted");
     }
     else if (payload_contains(payload, payload_len, "\"CleanNow\":0") ||
              payload_contains(payload, payload_len, "\"clean_now\":0") ||
              payload_contains(payload, payload_len, "\"flag\":0"))
     {
-        flag = 0;
-        rt_pin_write(IN1, PIN_LOW);
-        rt_pin_write(IN2, PIN_LOW);
+        Sensor_Logic_RequestReset();
         EXAMPLE_TRACE("remote clean command cleared");
     }
 }
@@ -180,9 +174,7 @@ void example_event_handle(void *pcontext, void *pclient, iotx_mqtt_event_msg_pt 
 
     if (msg->event_type == IOTX_MQTT_EVENT_DISCONNECT)
     {
-        flag = 0;
-        rt_pin_write(IN1, PIN_LOW);
-        rt_pin_write(IN2, PIN_LOW);
+        Sensor_Logic_RequestReset();
     }
 }
 

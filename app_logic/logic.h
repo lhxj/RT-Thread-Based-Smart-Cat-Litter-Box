@@ -17,7 +17,14 @@
 #define REFER_VOLTAGE       330          /* 3.3V reference voltage x100 */
 #define CONVERT_BITS        (1 << 12)    /* 12-bit conversion range */
 
+extern int box_used;
+
 void access_Sensor(void);
+void Sensor_Logic_Init(void);
+void Sensor_Logic_UpdateInputs(void);
 void Sensor_Logic_Running(void);
+void Sensor_Logic_RequestClean(void);
+void Sensor_Logic_RequestReset(void);
+const char *Sensor_Logic_StateName(void);
 
 #endif /* APPLICATIONS_APP_LOGIC_LOGIC_H_ */

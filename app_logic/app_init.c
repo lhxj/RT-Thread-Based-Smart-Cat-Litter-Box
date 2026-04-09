@@ -10,6 +10,7 @@
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
+#include <string.h>
 #include "rtconfig.h"
 
 #include "dev_sign_api.h"
@@ -34,12 +35,11 @@ static rt_sem_t dynamic_sem = RT_NULL;
 static rt_mutex_t dynamic_mutex = RT_NULL;
 
 #define TASK_TIMESLICE     5
+#define CONTROL_LOOP_PERIOD_MS 100
 
 extern char DEMO_PRODUCT_KEY[IOTX_PRODUCT_KEY_LEN + 1];
 extern char DEMO_DEVICE_NAME[IOTX_DEVICE_NAME_LEN + 1];
 extern char DEMO_DEVICE_SECRET[IOTX_DEVICE_SECRET_LEN + 1];
-
-extern rt_adc_device_t adc_dev;
 
 // 1) sensor task
 /*************** sensor task *************/
@@ -122,12 +122,13 @@ int start_rt_thread(void)
         return -1;
     }
 
+    Sensor_Logic_Init();
 
     /* 1) create sensor task */
     sensor_task_thread = rt_thread_create("sensor_th",
                                           ReadSensor_Task, RT_NULL,
                                           SENSOR_TASK_SIZE,
-                                          12, TASK_TIMESLICE);
+                                          SENSOR_PRIORITY, TASK_TIMESLICE);
 
         /* start sensor task */
     if (sensor_task_thread != RT_NULL)
@@ -137,7 +138,7 @@ int start_rt_thread(void)
     control_task_thread = rt_thread_create("con_th",
                                            StartControl_Task, RT_NULL,
                                            CONTROL_TASK_SIZE,
-                                           11, TASK_TIMESLICE);
+                                           CONTROL_PRIORITY, TASK_TIMESLICE);
 
         /* start control task */
     if (control_task_thread != RT_NULL)
@@ -147,7 +148,7 @@ int start_rt_thread(void)
     /* 3) create MQTT task */
     MQTT_task_thread = rt_thread_create("mqtt_th",
                                         Mqtt_Task, RT_NULL,
-                                        CONTROL_TASK_SIZE,
+                                        MQTT_TASK_SIZE,
                                         MQTT_PRIORITY, TASK_TIMESLICE);
     if (MQTT_task_thread != RT_NULL)
         rt_thread_startup(MQTT_task_thread);
@@ -200,22 +201,23 @@ static void ReadSensor_Task(void *parameter)
 /* control task entry */
 static void StartControl_Task(void *parameter)
 {
-    static rt_err_t result;
+    rt_err_t result;
+
+    RT_UNUSED(parameter);
+
     while(1)
     {
-        result = rt_sem_take(dynamic_sem, RT_WAITING_FOREVER);
-        if (result != RT_EOK)
-               {
-                   rt_kprintf("t2 take a dynamic semaphore, failed.\n");
-                   rt_sem_delete(dynamic_sem);
-                   return;
-               }
-               else
-               {
-                   Sensor_Logic_Running();
-                   //rt_kprintf("enter the Sensor_Logic_Running\n");
-               }
-        rt_thread_mdelay(500);
+        result = rt_sem_take(dynamic_sem, rt_tick_from_millisecond(CONTROL_LOOP_PERIOD_MS));
+        if (result == RT_EOK)
+        {
+            Sensor_Logic_UpdateInputs();
+        }
+        else if (result != -RT_ETIMEOUT)
+        {
+            rt_kprintf("control sem take failed: %d\r\n", result);
+        }
+
+        Sensor_Logic_Running();
     }
 }
 
