@@ -35,6 +35,17 @@ extern struct rt_mailbox hum_mb;
 #define DHT11_DATA_PIN GET_PIN(E, 10)
 
 #define BIN_FULL_WEIGHT_THRESHOLD 500
+#define LOGIC_LOG_PREFIX "[LOGIC] "
+#define STATUS_LOG_PREFIX "[STAT] "
+
+typedef struct
+{
+    litter_fsm_state_t state;
+    int fault_code;
+    rt_bool_t mqtt_link;
+    rt_bool_t bin_full;
+    rt_bool_t protect_active;
+} litter_status_snapshot_t;
 
 static rt_uint32_t cur_hum;
 static rt_uint32_t cur_tem;
@@ -43,11 +54,102 @@ static rt_bool_t g_prev_occupied = RT_FALSE;
 static rt_bool_t g_prev_bin_full = RT_FALSE;
 static rt_bool_t g_remote_clean_request = RT_FALSE;
 static rt_bool_t g_reset_request = RT_FALSE;
+static rt_bool_t g_status_snapshot_valid = RT_FALSE;
+static litter_status_snapshot_t g_last_status_snapshot;
 static litter_fsm_ctx_t g_fsm_ctx;
 
 extern int cur_weight;
 
 int box_used = 0;
+
+static rt_bool_t logic_is_occupied(void);
+
+static void logic_fill_status_snapshot(litter_status_snapshot_t *snapshot)
+{
+    if (snapshot == RT_NULL)
+    {
+        return;
+    }
+
+    snapshot->state = litter_fsm_get_state(&g_fsm_ctx);
+    snapshot->fault_code = litter_fsm_get_fault_code(&g_fsm_ctx);
+    snapshot->mqtt_link = mqtt_is_link_online();
+    snapshot->bin_full = litter_fsm_is_bin_full(&g_fsm_ctx);
+    snapshot->protect_active = litter_fsm_is_protect_active(&g_fsm_ctx);
+}
+
+static rt_bool_t logic_status_snapshot_changed(const litter_status_snapshot_t *current,
+                                              const litter_status_snapshot_t *previous)
+{
+    if ((current == RT_NULL) || (previous == RT_NULL))
+    {
+        return RT_TRUE;
+    }
+
+    if (current->state != previous->state)
+    {
+        return RT_TRUE;
+    }
+
+    if (current->fault_code != previous->fault_code)
+    {
+        return RT_TRUE;
+    }
+
+    if (current->mqtt_link != previous->mqtt_link)
+    {
+        return RT_TRUE;
+    }
+
+    if (current->bin_full != previous->bin_full)
+    {
+        return RT_TRUE;
+    }
+
+    if (current->protect_active != previous->protect_active)
+    {
+        return RT_TRUE;
+    }
+
+    return RT_FALSE;
+}
+
+static void logic_log_status(const char *reason, rt_bool_t force)
+{
+    litter_status_snapshot_t snapshot;
+
+    if (g_logic_ready != RT_TRUE)
+    {
+        return;
+    }
+
+    logic_fill_status_snapshot(&snapshot);
+
+    if ((force != RT_TRUE) &&
+        (g_status_snapshot_valid == RT_TRUE) &&
+        (logic_status_snapshot_changed(&snapshot, &g_last_status_snapshot) != RT_TRUE))
+    {
+        return;
+    }
+
+    rt_kprintf(STATUS_LOG_PREFIX
+               "reason=%s state=%s fault=%s(%d) mqtt=%s bin_full=%d protect=%d occupied=%d weight=%d used=%d hum=%lu temp=%lu\r\n",
+               (reason != RT_NULL) ? reason : "update",
+               litter_fsm_state_name(snapshot.state),
+               litter_fsm_fault_name(snapshot.fault_code),
+               snapshot.fault_code,
+               (snapshot.mqtt_link == RT_TRUE) ? "ON" : "OFF",
+               snapshot.bin_full,
+               snapshot.protect_active,
+               logic_is_occupied(),
+               cur_weight,
+               box_used,
+               (unsigned long)cur_hum,
+               (unsigned long)cur_tem);
+
+    g_last_status_snapshot = snapshot;
+    g_status_snapshot_valid = RT_TRUE;
+}
 
 static rt_bool_t logic_is_occupied(void)
 {
@@ -97,7 +199,7 @@ static void logic_fault_handler(int fault_code)
 {
     rt_pin_write(BUZZER, PIN_LOW);
     rt_pin_write(O3, PIN_LOW);
-    rt_kprintf("[LOGIC] fault latched=%d\r\n", fault_code);
+    rt_kprintf(LOGIC_LOG_PREFIX "fault latched=%d\r\n", fault_code);
 }
 
 static const litter_fsm_ops_t g_fsm_ops =
@@ -153,6 +255,7 @@ void Sensor_Logic_Init(void)
     }
 
     g_logic_ready = RT_TRUE;
+    logic_log_status("boot", RT_TRUE);
 }
 
 void Sensor_Logic_UpdateInputs(void)
@@ -181,13 +284,15 @@ void Sensor_Logic_UpdateInputs(void)
 void Sensor_Logic_RequestClean(void)
 {
     g_remote_clean_request = RT_TRUE;
-    rt_kprintf("[LOGIC] clean request queued\r\n");
+    rt_kprintf(LOGIC_LOG_PREFIX "clean request queued\r\n");
+    logic_log_status("clean_request", RT_TRUE);
 }
 
 void Sensor_Logic_RequestReset(void)
 {
     g_reset_request = RT_TRUE;
-    rt_kprintf("[LOGIC] reset request queued\r\n");
+    rt_kprintf(LOGIC_LOG_PREFIX "reset request queued\r\n");
+    logic_log_status("reset_request", RT_TRUE);
 }
 
 litter_fsm_state_t Sensor_Logic_GetState(void)
@@ -210,6 +315,23 @@ const char *Sensor_Logic_FaultName(void)
     return litter_fsm_fault_name(Sensor_Logic_GetFaultCode());
 }
 
+const char *Sensor_Logic_FaultShortName(void)
+{
+    switch ((litter_fsm_fault_t)Sensor_Logic_GetFaultCode())
+    {
+    case FSM_FAULT_NONE:
+        return "NONE";
+    case FSM_FAULT_BIN_FULL:
+        return "BIN_FULL";
+    case FSM_FAULT_CLEAN_TIMEOUT:
+        return "TIMEOUT";
+    case FSM_FAULT_PROTECT_TRIGGER:
+        return "PROTECT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 rt_bool_t Sensor_Logic_IsBinFull(void)
 {
     return litter_fsm_is_bin_full(&g_fsm_ctx);
@@ -223,21 +345,49 @@ rt_bool_t Sensor_Logic_IsProtectActive(void)
 #ifdef RT_USING_FINSH
 static void litter_status(void)
 {
-    rt_kprintf("state=%s fault=%s(%d) bin_full=%d protect=%d mqtt_link=%d\r\n",
+    rt_kprintf("state=%s fault=%s(%d)\r\n",
                Sensor_Logic_StateName(),
                Sensor_Logic_FaultName(),
-               Sensor_Logic_GetFaultCode(),
+               Sensor_Logic_GetFaultCode());
+    rt_kprintf("mqtt_link=%d bin_full=%d protect=%d occupied=%d\r\n",
+               mqtt_is_link_online(),
                Sensor_Logic_IsBinFull(),
                Sensor_Logic_IsProtectActive(),
-               mqtt_is_link_online());
+               logic_is_occupied());
+    rt_kprintf("weight=%d used=%d hum=%lu temp=%lu\r\n",
+               cur_weight,
+               box_used,
+               (unsigned long)cur_hum,
+               (unsigned long)cur_tem);
 }
 MSH_CMD_EXPORT(litter_status, show litter box state/fault/link status);
+
+static void litter_clean(void)
+{
+    Sensor_Logic_RequestClean();
+}
+MSH_CMD_EXPORT(litter_clean, request one local clean cycle for bench demo);
 
 static void litter_reset(void)
 {
     Sensor_Logic_RequestReset();
 }
 MSH_CMD_EXPORT(litter_reset, request local litter fault recover);
+
+static void litter_timeout(void)
+{
+    if (Sensor_Logic_GetState() != FSM_STATE_CLEANING)
+    {
+        rt_kprintf(LOGIC_LOG_PREFIX "timeout demo ignored, state=%s\r\n",
+                   Sensor_Logic_StateName());
+        return;
+    }
+
+    rt_kprintf(LOGIC_LOG_PREFIX "inject clean timeout for bench demo\r\n");
+    litter_fsm_dispatch(&g_fsm_ctx, EVT_STALL_OR_TIMEOUT);
+    logic_log_status("demo_timeout", RT_TRUE);
+}
+MSH_CMD_EXPORT(litter_timeout, inject clean-timeout fault during CLEANING for demo);
 #endif
 
 /* sensor control logic */
@@ -246,6 +396,7 @@ void Sensor_Logic_Running(void)
     litter_fsm_state_t current_state;
     rt_bool_t occupied_now;
     rt_bool_t bin_full_now;
+    rt_bool_t protect_prev;
     rt_bool_t protect_now;
 
     if (g_logic_ready == RT_FALSE)
@@ -256,9 +407,24 @@ void Sensor_Logic_Running(void)
     occupied_now = logic_is_occupied();
     bin_full_now = logic_is_bin_full();
     current_state = litter_fsm_get_state(&g_fsm_ctx);
+    protect_prev = litter_fsm_is_protect_active(&g_fsm_ctx);
     protect_now = logic_is_protect_active(occupied_now, current_state);
 
     litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, protect_now);
+
+    if (occupied_now != g_prev_occupied)
+    {
+        rt_kprintf(LOGIC_LOG_PREFIX "occupied %s\r\n",
+                   (occupied_now == RT_TRUE) ? "ON" : "OFF");
+    }
+
+    if (bin_full_now != g_prev_bin_full)
+    {
+        rt_kprintf(LOGIC_LOG_PREFIX "bin_full %s weight=%d threshold=%d\r\n",
+                   (bin_full_now == RT_TRUE) ? "ON" : "OFF",
+                   cur_weight,
+                   BIN_FULL_WEIGHT_THRESHOLD);
+    }
 
     if ((bin_full_now == RT_TRUE) && (g_prev_bin_full == RT_FALSE))
     {
@@ -275,6 +441,7 @@ void Sensor_Logic_Running(void)
                 if (current_state == FSM_STATE_IDLE)
                 {
                     box_used++;
+                    rt_kprintf(LOGIC_LOG_PREFIX "usage count=%d\r\n", box_used);
                 }
 
                 if (current_state == FSM_STATE_CLEANING)
@@ -306,6 +473,14 @@ void Sensor_Logic_Running(void)
     }
 
     litter_fsm_tick(&g_fsm_ctx);
+
+    if (litter_fsm_is_protect_active(&g_fsm_ctx) != protect_prev)
+    {
+        rt_kprintf(LOGIC_LOG_PREFIX "protect %s\r\n",
+                   (litter_fsm_is_protect_active(&g_fsm_ctx) == RT_TRUE) ? "ON" : "OFF");
+    }
+
+    logic_log_status("update", RT_FALSE);
 
     g_prev_occupied = occupied_now;
     g_prev_bin_full = bin_full_now;

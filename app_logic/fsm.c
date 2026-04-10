@@ -26,7 +26,7 @@ static litter_fsm_state_t fsm_resolve_idle_or_occupied(const litter_fsm_ctx_t *c
 
 static void fsm_log_bin_full_active(void)
 {
-    rt_kprintf(FSM_LOG_PREFIX "BIN_FULL active\r\n");
+    rt_kprintf(FSM_LOG_PREFIX "ALARM bin full active\r\n");
 }
 
 static void fsm_log_clean_block(const char *reason)
@@ -105,7 +105,7 @@ static void fsm_block_clean_for_bin_full(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    rt_kprintf(FSM_LOG_PREFIX "BIN_FULL block clean\r\n");
+    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK block clean: bin full\r\n");
     fsm_enter_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
 }
 
@@ -390,7 +390,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         break;
 
     case EVT_STALL_OR_TIMEOUT:
-        rt_kprintf(FSM_LOG_PREFIX "CLEAN timeout\r\n");
+        rt_kprintf(FSM_LOG_PREFIX "FAULT trigger: clean timeout\r\n");
         fsm_enter_fault(ctx, FSM_FAULT_CLEAN_TIMEOUT, RT_NULL);
         return;
 

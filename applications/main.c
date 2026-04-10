@@ -79,10 +79,14 @@ int main(void)
 
         snprintf(line_1, sizeof(line_1), "W:%d U:%d", cur_weight, box_used);
         snprintf(line_2, sizeof(line_2), "ST:%s", Sensor_Logic_StateName());
-        snprintf(line_3, sizeof(line_3), "FC:%s", Sensor_Logic_FaultName());
+        snprintf(line_3,
+                 sizeof(line_3),
+                 "F:%d %s",
+                 Sensor_Logic_GetFaultCode(),
+                 Sensor_Logic_FaultShortName());
         snprintf(line_4,
                  sizeof(line_4),
-                 "LK:%s B:%d P:%d",
+                 "MQ:%s BN:%d PT:%d",
                  (mqtt_is_link_online() == RT_TRUE) ? "ON" : "OFF",
                  Sensor_Logic_IsBinFull(),
                  Sensor_Logic_IsProtectActive());
