@@ -54,6 +54,17 @@ static rt_bool_t logic_is_bin_full(void)
     return (cur_weight >= BIN_FULL_WEIGHT_THRESHOLD) ? RT_TRUE : RT_FALSE;
 }
 
+static rt_bool_t logic_is_protect_active(rt_bool_t occupied_now, litter_fsm_state_t current_state)
+{
+    if ((occupied_now == RT_TRUE) &&
+        ((current_state == FSM_STATE_CLEANING) || (current_state == FSM_STATE_SAFE_STOP)))
+    {
+        return RT_TRUE;
+    }
+
+    return RT_FALSE;
+}
+
 static void logic_motor_forward_start(void)
 {
     rt_pin_write(IN1, PIN_LOW);
@@ -122,7 +133,7 @@ void Sensor_Logic_Init(void)
 
     litter_fsm_init(&g_fsm_ctx, &g_fsm_ops);
 
-    litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, occupied_now);
+    litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, RT_FALSE);
     g_prev_occupied = occupied_now;
     g_prev_bin_full = bin_full_now;
 
@@ -205,7 +216,7 @@ void Sensor_Logic_Running(void)
     occupied_now = logic_is_occupied();
     bin_full_now = logic_is_bin_full();
     current_state = litter_fsm_get_state(&g_fsm_ctx);
-    protect_now = occupied_now;
+    protect_now = logic_is_protect_active(occupied_now, current_state);
 
     litter_fsm_sync_inputs(&g_fsm_ctx, occupied_now, bin_full_now, protect_now);
 
