@@ -121,6 +121,17 @@ static void fsm_stop_cleaning_for_protect(litter_fsm_ctx_t *ctx)
     fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
 }
 
+static rt_bool_t fsm_guard_bin_full_recover(litter_fsm_ctx_t *ctx, const char *reason)
+{
+    if ((ctx == RT_NULL) || (ctx->bin_full != RT_TRUE))
+    {
+        return RT_FALSE;
+    }
+
+    fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, reason);
+    return RT_TRUE;
+}
+
 static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
 {
     litter_fsm_state_t next_state;
@@ -130,13 +141,15 @@ static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
         return;
     }
 
+    if (fsm_guard_bin_full_recover(ctx,
+                                   "SAFE_STOP release blocked: bin full") == RT_TRUE)
+    {
+        return;
+    }
+
     if (ctx->occupied == RT_TRUE)
     {
         next_state = FSM_STATE_OCCUPIED;
-    }
-    else if (ctx->bin_full == RT_TRUE)
-    {
-        next_state = FSM_STATE_IDLE;
     }
     else
     {
@@ -163,10 +176,8 @@ static void fsm_handle_reset_recover(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    if ((ctx->state == FSM_STATE_FAULT) && (ctx->bin_full == RT_TRUE))
+    if (fsm_guard_bin_full_recover(ctx, "RESET blocked: bin full") == RT_TRUE)
     {
-        rt_kprintf(FSM_LOG_PREFIX "RESET blocked: bin full\r\n");
-        fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
         return;
     }
 
