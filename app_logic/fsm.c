@@ -5,6 +5,9 @@
 #define FSM_LOG_PREFIX "[FSM] "
 
 static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state);
+static void fsm_start_clean_phase(litter_fsm_ctx_t *ctx, litter_clean_phase_t phase);
+static rt_uint32_t fsm_clean_phase_timeout_ms(const litter_fsm_ctx_t *ctx);
+static void fsm_finish_cleaning(litter_fsm_ctx_t *ctx);
 
 static void fsm_motor_stop(const litter_fsm_ctx_t *ctx)
 {
@@ -22,6 +25,85 @@ static litter_fsm_state_t fsm_resolve_idle_or_occupied(const litter_fsm_ctx_t *c
     }
 
     return FSM_STATE_IDLE;
+}
+
+static void fsm_start_clean_phase(litter_fsm_ctx_t *ctx, litter_clean_phase_t phase)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    /* Keep phase semantics as destination positions; motor direction stays local here. */
+    ctx->clean_phase = phase;
+    ctx->phase_started_tick = rt_tick_get();
+
+    switch (phase)
+    {
+    case FSM_CLEAN_PHASE_TO_POS2:
+        if ((ctx->ops != RT_NULL) && (ctx->ops->motor_forward_start != RT_NULL))
+        {
+            ctx->ops->motor_forward_start();
+        }
+        break;
+
+    case FSM_CLEAN_PHASE_TO_POS3:
+        if ((ctx->ops != RT_NULL) && (ctx->ops->motor_reverse_start != RT_NULL))
+        {
+            ctx->ops->motor_reverse_start();
+        }
+        break;
+
+    case FSM_CLEAN_PHASE_TO_POS1:
+        if ((ctx->ops != RT_NULL) && (ctx->ops->motor_forward_start != RT_NULL))
+        {
+            ctx->ops->motor_forward_start();
+        }
+        break;
+
+    case FSM_CLEAN_PHASE_NONE:
+    default:
+        fsm_motor_stop(ctx);
+        break;
+    }
+
+    rt_kprintf(FSM_LOG_PREFIX "CLEANING phase=%s\r\n",
+               litter_fsm_clean_phase_name(ctx->clean_phase));
+}
+
+static rt_uint32_t fsm_clean_phase_timeout_ms(const litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return 0;
+    }
+
+    switch (ctx->clean_phase)
+    {
+    case FSM_CLEAN_PHASE_TO_POS2:
+        return ctx->timeout_to_pos2_ms;
+
+    case FSM_CLEAN_PHASE_TO_POS3:
+        return ctx->timeout_to_pos3_ms;
+
+    case FSM_CLEAN_PHASE_TO_POS1:
+        return ctx->timeout_to_pos1_ms;
+
+    case FSM_CLEAN_PHASE_NONE:
+    default:
+        return 0;
+    }
+}
+
+static void fsm_finish_cleaning(litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    fsm_motor_stop(ctx);
+    litter_fsm_dispatch(ctx, EVT_CLEAN_DONE);
 }
 
 static void fsm_log_bin_full_active(void)
@@ -261,13 +343,7 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
         ctx->cleaning_active = RT_TRUE;
         ctx->fault_code = FSM_FAULT_NONE;
         ctx->clean_started_tick = now;
-        ctx->phase_started_tick = now;
-        ctx->clean_phase = FSM_CLEAN_PHASE_FORWARD;
-        if ((ctx->ops != RT_NULL) && (ctx->ops->motor_forward_start != RT_NULL))
-        {
-            ctx->ops->motor_forward_start();
-        }
-        rt_kprintf(FSM_LOG_PREFIX "CLEANING phase=FORWARD\r\n");
+        fsm_start_clean_phase(ctx, FSM_CLEAN_PHASE_TO_POS2);
         break;
 
     case FSM_STATE_SAFE_STOP:
@@ -326,9 +402,10 @@ void litter_fsm_init(litter_fsm_ctx_t *ctx, const litter_fsm_ops_t *ops)
     ctx->ops = ops;
     ctx->leave_confirm_ms = 2000;
     ctx->clean_delay_ms = 5000;
-    ctx->clean_forward_ms = 10000;
-    ctx->clean_reverse_ms = 10000;
-    ctx->clean_timeout_ms = 23000;
+    ctx->timeout_to_pos2_ms = 6000;
+    ctx->timeout_to_pos3_ms = 5000;
+    ctx->timeout_to_pos1_ms = 6000;
+    ctx->clean_total_timeout_ms = 20000;
     ctx->state = FSM_STATE_IDLE;
     ctx->state_enter_tick = rt_tick_get();
     ctx->fault_code = FSM_FAULT_NONE;
@@ -497,6 +574,21 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         {
             fsm_block_clean_for_bin_full(ctx);
         }
+        else if ((event == EVT_POS2_REACHED) &&
+                 (ctx->clean_phase == FSM_CLEAN_PHASE_TO_POS2))
+        {
+            fsm_start_clean_phase(ctx, FSM_CLEAN_PHASE_TO_POS3);
+        }
+        else if ((event == EVT_POS3_REACHED) &&
+                 (ctx->clean_phase == FSM_CLEAN_PHASE_TO_POS3))
+        {
+            fsm_start_clean_phase(ctx, FSM_CLEAN_PHASE_TO_POS1);
+        }
+        else if ((event == EVT_POS1_REACHED) &&
+                 (ctx->clean_phase == FSM_CLEAN_PHASE_TO_POS1))
+        {
+            fsm_finish_cleaning(ctx);
+        }
         else if (event == EVT_CLEAN_DONE)
         {
             fsm_enter_state(ctx, FSM_STATE_IDLE);
@@ -541,9 +633,8 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
 void litter_fsm_tick(litter_fsm_ctx_t *ctx)
 {
     rt_tick_t now;
-    rt_tick_t clean_timeout_ticks;
-    rt_tick_t clean_forward_ticks;
-    rt_tick_t clean_reverse_ticks;
+    rt_tick_t clean_total_timeout_ticks;
+    rt_tick_t clean_phase_timeout_ticks;
 
     if (ctx == RT_NULL)
     {
@@ -583,31 +674,20 @@ void litter_fsm_tick(litter_fsm_ctx_t *ctx)
         break;
 
     case FSM_STATE_CLEANING:
-        clean_timeout_ticks = rt_tick_from_millisecond(ctx->clean_timeout_ms);
-        clean_forward_ticks = rt_tick_from_millisecond(ctx->clean_forward_ms);
-        clean_reverse_ticks = rt_tick_from_millisecond(ctx->clean_reverse_ms);
+        clean_total_timeout_ticks = rt_tick_from_millisecond(ctx->clean_total_timeout_ms);
+        clean_phase_timeout_ticks = rt_tick_from_millisecond(fsm_clean_phase_timeout_ms(ctx));
 
-        if ((rt_uint32_t)(now - ctx->clean_started_tick) >= clean_timeout_ticks)
+        if ((clean_total_timeout_ticks > 0) &&
+            ((rt_uint32_t)(now - ctx->clean_started_tick) >= clean_total_timeout_ticks))
         {
             litter_fsm_dispatch(ctx, EVT_STALL_OR_TIMEOUT);
             break;
         }
 
-        if ((ctx->clean_phase == FSM_CLEAN_PHASE_FORWARD) &&
-            ((rt_uint32_t)(now - ctx->phase_started_tick) >= clean_forward_ticks))
+        if ((clean_phase_timeout_ticks > 0) &&
+            ((rt_uint32_t)(now - ctx->phase_started_tick) >= clean_phase_timeout_ticks))
         {
-            ctx->clean_phase = FSM_CLEAN_PHASE_REVERSE;
-            ctx->phase_started_tick = now;
-            if ((ctx->ops != RT_NULL) && (ctx->ops->motor_reverse_start != RT_NULL))
-            {
-                ctx->ops->motor_reverse_start();
-            }
-            rt_kprintf(FSM_LOG_PREFIX "CLEANING phase=REVERSE\r\n");
-        }
-        else if ((ctx->clean_phase == FSM_CLEAN_PHASE_REVERSE) &&
-                 ((rt_uint32_t)(now - ctx->phase_started_tick) >= clean_reverse_ticks))
-        {
-            litter_fsm_dispatch(ctx, EVT_CLEAN_DONE);
+            litter_fsm_dispatch(ctx, EVT_STALL_OR_TIMEOUT);
         }
         break;
 
@@ -624,6 +704,16 @@ litter_fsm_state_t litter_fsm_get_state(const litter_fsm_ctx_t *ctx)
     }
 
     return ctx->state;
+}
+
+litter_clean_phase_t litter_fsm_get_clean_phase(const litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return FSM_CLEAN_PHASE_NONE;
+    }
+
+    return ctx->clean_phase;
 }
 
 int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx)
@@ -693,6 +783,12 @@ const char *litter_fsm_event_name(litter_fsm_event_t event)
         return "EVT_CLEAN_START";
     case EVT_CLEAN_DONE:
         return "EVT_CLEAN_DONE";
+    case EVT_POS1_REACHED:
+        return "EVT_POS1_REACHED";
+    case EVT_POS2_REACHED:
+        return "EVT_POS2_REACHED";
+    case EVT_POS3_REACHED:
+        return "EVT_POS3_REACHED";
     case EVT_PROTECT_TRIGGER:
         return "EVT_PROTECT_TRIGGER";
     case EVT_PROTECT_RELEASE:
@@ -720,6 +816,23 @@ const char *litter_fsm_fault_name(int fault_code)
         return "CLEAN_TIMEOUT";
     case FSM_FAULT_PROTECT_TRIGGER:
         return "PROTECT_TRIGGER";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+const char *litter_fsm_clean_phase_name(litter_clean_phase_t phase)
+{
+    switch (phase)
+    {
+    case FSM_CLEAN_PHASE_NONE:
+        return "NONE";
+    case FSM_CLEAN_PHASE_TO_POS2:
+        return "TO_POS2";
+    case FSM_CLEAN_PHASE_TO_POS3:
+        return "TO_POS3";
+    case FSM_CLEAN_PHASE_TO_POS1:
+        return "TO_POS1";
     default:
         return "UNKNOWN";
     }
