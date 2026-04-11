@@ -36,6 +36,8 @@ void example_message_arrive(void *pcontext, void *pclient, iotx_mqtt_event_msg_p
 int example_subscribe(void *handle);
 int my_publish(void *handle); // publish telemetry to topic
 void example_event_handle(void *pcontext, void *pclient, iotx_mqtt_event_msg_pt msg);
+void mqtt_set_link_state(rt_bool_t online);
+rt_bool_t mqtt_is_link_online(void);
 
 
 #endif /* APPLICATIONS_APP_LOGIC_MQTT_H_ */

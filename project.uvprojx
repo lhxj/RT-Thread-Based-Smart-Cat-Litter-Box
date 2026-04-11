@@ -404,6 +404,13 @@
           </Files>
           <Files>
             <File>
+              <FileName>fsm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>app_logic\fsm.c</FilePath>
+            </File>
+          </Files>
+          <Files>
+            <File>
               <FileName>mqtt.c</FileName>
               <FileType>1</FileType>
               <FilePath>app_logic\mqtt.c</FilePath>

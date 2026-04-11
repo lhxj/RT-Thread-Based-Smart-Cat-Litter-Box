@@ -7,6 +7,9 @@
  * Date           Author       Notes
  * 2022-08-01     ywx       the first version
  */
+#ifndef APPLICATIONS_APP_LOGIC_APP_INIT_H_
+#define APPLICATIONS_APP_LOGIC_APP_INIT_H_
+
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
@@ -18,6 +21,5 @@
 #include "logic.h"
 
 int start_rt_thread(void);
-static void ReadSensor_Task(void *parameter);
-static void StartControl_Task(void *parameter);
-static void Mqtt_Task(void *parameter);
+
+#endif /* APPLICATIONS_APP_LOGIC_APP_INIT_H_ */
