@@ -4,12 +4,188 @@
 
 #define FSM_LOG_PREFIX "[FSM] "
 
+static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state);
+
 static void fsm_motor_stop(const litter_fsm_ctx_t *ctx)
 {
     if ((ctx != RT_NULL) && (ctx->ops != RT_NULL) && (ctx->ops->motor_stop != RT_NULL))
     {
         ctx->ops->motor_stop();
     }
+}
+
+static litter_fsm_state_t fsm_resolve_idle_or_occupied(const litter_fsm_ctx_t *ctx)
+{
+    if ((ctx != RT_NULL) && (ctx->occupied == RT_TRUE))
+    {
+        return FSM_STATE_OCCUPIED;
+    }
+
+    return FSM_STATE_IDLE;
+}
+
+static void fsm_log_bin_full_active(void)
+{
+    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK bin full active\r\n");
+}
+
+static void fsm_log_clean_block(const char *reason)
+{
+    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK block clean: %s\r\n", reason);
+}
+
+static void fsm_set_fault(litter_fsm_ctx_t *ctx,
+                          litter_fsm_fault_t fault_code,
+                          const char *reason)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    ctx->fault_code = fault_code;
+    if (reason != RT_NULL)
+    {
+        rt_kprintf(FSM_LOG_PREFIX "%s\r\n", reason);
+    }
+
+    if (ctx->state == FSM_STATE_FAULT)
+    {
+        fsm_motor_stop(ctx);
+        if ((ctx->ops != RT_NULL) && (ctx->ops->on_fault != RT_NULL))
+        {
+            ctx->ops->on_fault(ctx->fault_code);
+        }
+        rt_kprintf(FSM_LOG_PREFIX "FAULT code=%d\r\n", ctx->fault_code);
+        return;
+    }
+
+    fsm_enter_state(ctx, FSM_STATE_FAULT);
+}
+
+static void fsm_block_clean_request(litter_fsm_ctx_t *ctx, const char *reason)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    fsm_log_clean_block(reason);
+    fsm_enter_state(ctx, fsm_resolve_idle_or_occupied(ctx));
+}
+
+static void fsm_block_clean_for_bin_full(litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    fsm_log_clean_block("bin full");
+    fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
+}
+
+static void fsm_try_enter_cleaning(litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    if (ctx->occupied == RT_TRUE)
+    {
+        fsm_block_clean_request(ctx, "occupied");
+    }
+    else if (ctx->bin_full == RT_TRUE)
+    {
+        fsm_block_clean_for_bin_full(ctx);
+    }
+    else if (ctx->protect_active == RT_TRUE)
+    {
+        fsm_block_clean_request(ctx, "protect active");
+    }
+    else
+    {
+        fsm_enter_state(ctx, FSM_STATE_CLEANING);
+    }
+}
+
+static void fsm_stop_cleaning_for_protect(litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK stop cleaning: protect active\r\n");
+    fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
+}
+
+static rt_bool_t fsm_guard_bin_full_recover(litter_fsm_ctx_t *ctx, const char *reason)
+{
+    if ((ctx == RT_NULL) || (ctx->bin_full != RT_TRUE))
+    {
+        return RT_FALSE;
+    }
+
+    fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, reason);
+    return RT_TRUE;
+}
+
+static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
+{
+    litter_fsm_state_t next_state;
+
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    if (fsm_guard_bin_full_recover(ctx,
+                                   "SAFE_STOP release blocked: bin full") == RT_TRUE)
+    {
+        return;
+    }
+
+    if (ctx->occupied == RT_TRUE)
+    {
+        next_state = FSM_STATE_OCCUPIED;
+    }
+    else
+    {
+        next_state = FSM_STATE_LEAVE_CONFIRM;
+    }
+
+    rt_kprintf(FSM_LOG_PREFIX "SAFE_STOP release -> %s\r\n",
+               litter_fsm_state_name(next_state));
+    fsm_enter_state(ctx, next_state);
+}
+
+static void fsm_handle_reset_recover(litter_fsm_ctx_t *ctx)
+{
+    litter_fsm_state_t next_state;
+
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
+    if (ctx->protect_active == RT_TRUE)
+    {
+        rt_kprintf(FSM_LOG_PREFIX "RESET blocked: protect active\r\n");
+        return;
+    }
+
+    if (fsm_guard_bin_full_recover(ctx, "RESET blocked: bin full") == RT_TRUE)
+    {
+        return;
+    }
+
+    ctx->fault_code = FSM_FAULT_NONE;
+    next_state = fsm_resolve_idle_or_occupied(ctx);
+    rt_kprintf(FSM_LOG_PREFIX "RESET recover -> %s\r\n",
+               litter_fsm_state_name(next_state));
+    fsm_enter_state(ctx, next_state);
 }
 
 static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state)
@@ -176,15 +352,13 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
 
     case EVT_BIN_FULL:
         ctx->bin_full = RT_TRUE;
-        ctx->fault_code = FSM_FAULT_BIN_FULL;
-        fsm_enter_state(ctx, FSM_STATE_FAULT);
-        return;
+        break;
 
     case EVT_PROTECT_TRIGGER:
         ctx->protect_active = RT_TRUE;
-        if (ctx->state != FSM_STATE_FAULT)
+        if (ctx->state == FSM_STATE_CLEANING)
         {
-            fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
+            fsm_stop_cleaning_for_protect(ctx);
         }
         return;
 
@@ -193,8 +367,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         break;
 
     case EVT_STALL_OR_TIMEOUT:
-        ctx->fault_code = FSM_FAULT_CLEAN_TIMEOUT;
-        fsm_enter_state(ctx, FSM_STATE_FAULT);
+        fsm_set_fault(ctx, FSM_FAULT_CLEAN_TIMEOUT, "FAULT clean timeout");
         return;
 
     default:
@@ -210,14 +383,11 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         }
         else if (event == EVT_CLEAN_START)
         {
-            if (ctx->occupied == RT_TRUE)
-            {
-                fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
-            }
-            else if ((ctx->bin_full == RT_FALSE) && (ctx->protect_active == RT_FALSE))
-            {
-                fsm_enter_state(ctx, FSM_STATE_CLEANING);
-            }
+            fsm_try_enter_cleaning(ctx);
+        }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_log_bin_full_active();
         }
         break;
 
@@ -226,45 +396,76 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         {
             fsm_enter_state(ctx, FSM_STATE_LEAVE_CONFIRM);
         }
+        else if (event == EVT_CLEAN_START)
+        {
+            fsm_try_enter_cleaning(ctx);
+        }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_log_bin_full_active();
+        }
         break;
 
     case FSM_STATE_LEAVE_CONFIRM:
         if (event == EVT_OCCUPIED_ON)
         {
+            rt_kprintf(FSM_LOG_PREFIX "INTERLOCK abort prep: occupied\r\n");
             fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
         }
         else if (event == EVT_DELAY_TIMEOUT)
         {
-            fsm_enter_state(ctx, FSM_STATE_CLEAN_DELAY);
+            if (ctx->bin_full == RT_TRUE)
+            {
+                fsm_block_clean_for_bin_full(ctx);
+            }
+            else if (ctx->protect_active == RT_TRUE)
+            {
+                fsm_block_clean_request(ctx, "protect active");
+            }
+            else if (ctx->occupied == RT_TRUE)
+            {
+                rt_kprintf(FSM_LOG_PREFIX "INTERLOCK abort prep: occupied\r\n");
+                fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
+            }
+            else
+            {
+                fsm_enter_state(ctx, FSM_STATE_CLEAN_DELAY);
+            }
         }
         else if (event == EVT_RESET)
         {
-            fsm_enter_state(ctx, FSM_STATE_IDLE);
+            fsm_handle_reset_recover(ctx);
+        }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_block_clean_for_bin_full(ctx);
         }
         break;
 
     case FSM_STATE_CLEAN_DELAY:
         if (event == EVT_OCCUPIED_ON)
         {
+            rt_kprintf(FSM_LOG_PREFIX "INTERLOCK abort prep: occupied\r\n");
             fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
         }
         else if ((event == EVT_DELAY_TIMEOUT) || (event == EVT_CLEAN_START))
         {
-            if ((ctx->bin_full == RT_FALSE) && (ctx->protect_active == RT_FALSE))
-            {
-                fsm_enter_state(ctx, FSM_STATE_CLEANING);
-            }
+            fsm_try_enter_cleaning(ctx);
         }
         else if (event == EVT_RESET)
         {
-            fsm_enter_state(ctx, FSM_STATE_IDLE);
+            fsm_handle_reset_recover(ctx);
+        }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_block_clean_for_bin_full(ctx);
         }
         break;
 
     case FSM_STATE_CLEANING:
         if ((event == EVT_OCCUPIED_ON) || (event == EVT_PROTECT_TRIGGER))
         {
-            fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
+            fsm_stop_cleaning_for_protect(ctx);
         }
         else if (event == EVT_CLEAN_DONE)
         {
@@ -279,31 +480,18 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
     case FSM_STATE_SAFE_STOP:
         if (event == EVT_PROTECT_RELEASE)
         {
-            if (ctx->occupied == RT_TRUE)
-            {
-                fsm_enter_state(ctx, FSM_STATE_OCCUPIED);
-            }
-            else
-            {
-                fsm_enter_state(ctx, FSM_STATE_LEAVE_CONFIRM);
-            }
+            fsm_recover_from_safe_stop(ctx);
         }
-        else if ((event == EVT_RESET) &&
-                 (ctx->occupied == RT_FALSE) &&
-                 (ctx->bin_full == RT_FALSE) &&
-                 (ctx->protect_active == RT_FALSE))
+        else if (event == EVT_RESET)
         {
-            fsm_enter_state(ctx, FSM_STATE_IDLE);
+            fsm_handle_reset_recover(ctx);
         }
         break;
 
     case FSM_STATE_FAULT:
-        if ((event == EVT_RESET) &&
-            (ctx->occupied == RT_FALSE) &&
-            (ctx->bin_full == RT_FALSE) &&
-            (ctx->protect_active == RT_FALSE))
+        if (event == EVT_RESET)
         {
-            fsm_enter_state(ctx, FSM_STATE_IDLE);
+            fsm_handle_reset_recover(ctx);
         }
         break;
 
@@ -325,12 +513,6 @@ void litter_fsm_tick(litter_fsm_ctx_t *ctx)
     }
 
     now = rt_tick_get();
-
-    if ((ctx->state != FSM_STATE_FAULT) && (ctx->bin_full == RT_TRUE))
-    {
-        litter_fsm_dispatch(ctx, EVT_BIN_FULL);
-        return;
-    }
 
     if ((ctx->state == FSM_STATE_CLEANING) && (ctx->protect_active == RT_TRUE))
     {
