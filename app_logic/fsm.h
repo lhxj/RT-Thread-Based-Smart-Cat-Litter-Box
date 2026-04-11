@@ -22,6 +22,9 @@ typedef enum
     EVT_DELAY_TIMEOUT,
     EVT_CLEAN_START,
     EVT_CLEAN_DONE,
+    EVT_POS1_REACHED,
+    EVT_POS2_REACHED,
+    EVT_POS3_REACHED,
     EVT_PROTECT_TRIGGER,
     EVT_PROTECT_RELEASE,
     EVT_STALL_OR_TIMEOUT,
@@ -40,8 +43,9 @@ typedef enum
 typedef enum
 {
     FSM_CLEAN_PHASE_NONE = 0,
-    FSM_CLEAN_PHASE_FORWARD,
-    FSM_CLEAN_PHASE_REVERSE,
+    FSM_CLEAN_PHASE_TO_POS2,
+    FSM_CLEAN_PHASE_TO_POS3,
+    FSM_CLEAN_PHASE_TO_POS1,
 } litter_clean_phase_t;
 
 typedef struct
@@ -68,9 +72,10 @@ typedef struct
     int fault_code;
     rt_uint32_t leave_confirm_ms;
     rt_uint32_t clean_delay_ms;
-    rt_uint32_t clean_forward_ms;
-    rt_uint32_t clean_reverse_ms;
-    rt_uint32_t clean_timeout_ms;
+    rt_uint32_t timeout_to_pos2_ms;
+    rt_uint32_t timeout_to_pos3_ms;
+    rt_uint32_t timeout_to_pos1_ms;
+    rt_uint32_t clean_total_timeout_ms;
     const litter_fsm_ops_t *ops;
 } litter_fsm_ctx_t;
 
@@ -82,11 +87,13 @@ void litter_fsm_sync_inputs(litter_fsm_ctx_t *ctx,
 void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event);
 void litter_fsm_tick(litter_fsm_ctx_t *ctx);
 litter_fsm_state_t litter_fsm_get_state(const litter_fsm_ctx_t *ctx);
+litter_clean_phase_t litter_fsm_get_clean_phase(const litter_fsm_ctx_t *ctx);
 int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx);
 rt_bool_t litter_fsm_is_bin_full(const litter_fsm_ctx_t *ctx);
 rt_bool_t litter_fsm_is_protect_active(const litter_fsm_ctx_t *ctx);
 const char *litter_fsm_state_name(litter_fsm_state_t state);
 const char *litter_fsm_event_name(litter_fsm_event_t event);
 const char *litter_fsm_fault_name(int fault_code);
+const char *litter_fsm_clean_phase_name(litter_clean_phase_t phase);
 
 #endif /* APPLICATIONS_APP_LOGIC_FSM_H_ */

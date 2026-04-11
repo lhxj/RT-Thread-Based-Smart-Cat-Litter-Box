@@ -35,7 +35,7 @@ static rt_sem_t dynamic_sem = RT_NULL;
 static rt_mutex_t dynamic_mutex = RT_NULL;
 
 #define TASK_TIMESLICE     5
-#define CONTROL_LOOP_PERIOD_MS 100
+#define CONTROL_LOOP_PERIOD_MS 10
 
 extern char DEMO_PRODUCT_KEY[IOTX_PRODUCT_KEY_LEN + 1];
 extern char DEMO_DEVICE_NAME[IOTX_DEVICE_NAME_LEN + 1];

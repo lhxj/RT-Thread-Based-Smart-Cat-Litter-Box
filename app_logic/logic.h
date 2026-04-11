@@ -31,6 +31,8 @@ litter_fsm_state_t Sensor_Logic_GetState(void);
 int Sensor_Logic_GetFaultCode(void);
 const char *Sensor_Logic_StateName(void);
 const char *Sensor_Logic_FaultName(void);
+const char *Sensor_Logic_CleanPhaseName(void);
+const char *Sensor_Logic_HallPositionName(void);
 rt_bool_t Sensor_Logic_IsBinFull(void);
 rt_bool_t Sensor_Logic_IsProtectActive(void);
 
