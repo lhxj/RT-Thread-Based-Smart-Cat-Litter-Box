@@ -44,10 +44,11 @@ extern int box_used;
 
 int main(void)
 {
-    char str_1[16];
-    char str_2[16];
-    char str_3[16];
-    char str_4[16];
+    char line_1[32];
+    char line_2[32];
+    char line_3[32];
+    char line_4[32];
+    char line_5[32];
     ssd1306_Init();
     if (start_rt_thread() != 0)
     {
@@ -76,28 +77,28 @@ int main(void)
 
         ssd1306_Fill(Black);
 
-        snprintf(str_1, sizeof(str_1), "%d", cur_weight);
+        snprintf(line_1, sizeof(line_1), "W:%d U:%d", cur_weight, box_used);
+        snprintf(line_2, sizeof(line_2), "ST:%s", Sensor_Logic_StateName());
+        snprintf(line_3, sizeof(line_3), "FC:%s", Sensor_Logic_FaultName());
+        snprintf(line_4,
+                 sizeof(line_4),
+                 "LK:%s B:%d P:%d",
+                 (mqtt_is_link_online() == RT_TRUE) ? "ON" : "OFF",
+                 Sensor_Logic_IsBinFull(),
+                 Sensor_Logic_IsProtectActive());
+        snprintf(line_5, sizeof(line_5), "H:%lu T:%lu", (unsigned long)hum, (unsigned long)tem);
+
         ssd1306_SetCursor(2, 0);
-        ssd1306_WriteString("weight:", Font_11x18, White);
-        ssd1306_SetCursor(2+75, 0);
-        ssd1306_WriteString(str_1, Font_11x18, White);
-
-        snprintf(str_2, sizeof(str_2), "%d", box_used);
-        ssd1306_SetCursor(2, 26);
-        ssd1306_WriteString("used:", Font_11x18, White);
-        ssd1306_SetCursor(2+55, 26);
-        ssd1306_WriteString(str_2, Font_11x18, White);
-
-        snprintf(str_3, sizeof(str_3), "%d", hum);
-        snprintf(str_4, sizeof(str_4), "%d", tem);
-        ssd1306_SetCursor(2, 26+26);
-        ssd1306_WriteString("hum:   tem:  ", Font_7x10, White);
-        ssd1306_SetCursor(2+25, 26+26);
-        ssd1306_WriteString(str_3, Font_7x10, White);
-        ssd1306_SetCursor(2+75, 26+26);
-        ssd1306_WriteString(str_4, Font_7x10, White);
+        ssd1306_WriteString(line_1, Font_7x10, White);
+        ssd1306_SetCursor(2, 11);
+        ssd1306_WriteString(line_2, Font_7x10, White);
+        ssd1306_SetCursor(2, 22);
+        ssd1306_WriteString(line_3, Font_7x10, White);
+        ssd1306_SetCursor(2, 33);
+        ssd1306_WriteString(line_4, Font_7x10, White);
+        ssd1306_SetCursor(2, 44);
+        ssd1306_WriteString(line_5, Font_7x10, White);
         ssd1306_UpdateScreen();
         rt_thread_mdelay(100);
     }
 }
-

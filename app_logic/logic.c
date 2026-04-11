@@ -13,8 +13,13 @@
 
 #include "logic.h"
 #include "fsm.h"
+#include "mqtt.h"
 #include "sensor.h"
 #include "drv_gpio.h"
+
+#ifdef RT_USING_FINSH
+#include <finsh.h>
+#endif
 
 int rt_hw_dht11_init(const char *name, struct rt_sensor_config *cfg);
 
@@ -199,6 +204,41 @@ const char *Sensor_Logic_StateName(void)
 {
     return litter_fsm_state_name(Sensor_Logic_GetState());
 }
+
+const char *Sensor_Logic_FaultName(void)
+{
+    return litter_fsm_fault_name(Sensor_Logic_GetFaultCode());
+}
+
+rt_bool_t Sensor_Logic_IsBinFull(void)
+{
+    return litter_fsm_is_bin_full(&g_fsm_ctx);
+}
+
+rt_bool_t Sensor_Logic_IsProtectActive(void)
+{
+    return litter_fsm_is_protect_active(&g_fsm_ctx);
+}
+
+#ifdef RT_USING_FINSH
+static void litter_status(void)
+{
+    rt_kprintf("state=%s fault=%s(%d) bin_full=%d protect=%d mqtt_link=%d\r\n",
+               Sensor_Logic_StateName(),
+               Sensor_Logic_FaultName(),
+               Sensor_Logic_GetFaultCode(),
+               Sensor_Logic_IsBinFull(),
+               Sensor_Logic_IsProtectActive(),
+               mqtt_is_link_online());
+}
+MSH_CMD_EXPORT(litter_status, show litter box state/fault/link status);
+
+static void litter_reset(void)
+{
+    Sensor_Logic_RequestReset();
+}
+MSH_CMD_EXPORT(litter_reset, request local litter fault recover);
+#endif
 
 /* sensor control logic */
 void Sensor_Logic_Running(void)

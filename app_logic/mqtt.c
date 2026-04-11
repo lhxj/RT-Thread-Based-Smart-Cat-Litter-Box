@@ -26,6 +26,8 @@
 #include "rtconfig.h"
 #include <string.h>
 
+#define MQTT_LOG_PREFIX "[MQTT] "
+
 extern rt_uint32_t hum, tem;
 extern int cur_weight;
 extern int box_used;
@@ -37,7 +39,13 @@ char DEMO_DEVICE_SECRET[IOTX_DEVICE_SECRET_LEN + 1] = {0};
 
 void mqtt_set_link_state(rt_bool_t online)
 {
+    if (g_mqtt_link_online == online)
+    {
+        return;
+    }
+
     g_mqtt_link_online = online;
+    rt_kprintf(MQTT_LOG_PREFIX "link %s\r\n", (online == RT_TRUE) ? "online" : "offline");
 }
 
 rt_bool_t mqtt_is_link_online(void)
@@ -85,8 +93,7 @@ static void handle_remote_control(const iotx_mqtt_topic_info_t *topic_info)
              payload_contains(payload, payload_len, "\"clean_now\":0") ||
              payload_contains(payload, payload_len, "\"flag\":0"))
     {
-        Sensor_Logic_RequestReset();
-        EXAMPLE_TRACE("remote clean command cleared");
+        rt_kprintf(MQTT_LOG_PREFIX "remote reset ignored, local recovery only\r\n");
     }
 }
 
@@ -144,24 +151,41 @@ int my_publish(void *handle)
 {
     int             res = 0;
     const char     *fmt = "/sys/%s/%s/thing/event/property/post";
-    const char     *fmt_payload = "{\"params\" : { \"temperature\":%d,\"humidity\":%d, \"Weight\":%d, \"RunTimes\":%d} }";
+    const char     *fmt_payload =
+        "{\"params\":{\"temperature\":%d,\"humidity\":%d,\"Weight\":%d,\"RunTimes\":%d,"
+        "\"state\":%d,\"state_text\":\"%s\",\"fault_code\":%d,\"fault_text\":\"%s\","
+        "\"mqtt_link\":%d,\"bin_full\":%d,\"protect_active\":%d}}";
     char           *topic = NULL;
     int             topic_len = 0;
     int             payload_len = 0;
     char           *payload = NULL;
-    payload_len = 160;
+    payload_len = 320;
     payload = HAL_Malloc(payload_len);
-        if (payload == NULL) {
-            EXAMPLE_TRACE("memory not enough");
-            return -1;
-        }
-        memset(payload, 0, payload_len);
-    HAL_Snprintf(payload,payload_len,fmt_payload,tem,hum,cur_weight,box_used);
+    if (payload == NULL) {
+        EXAMPLE_TRACE("memory not enough");
+        return -1;
+    }
+    memset(payload, 0, payload_len);
+    HAL_Snprintf(payload,
+                 payload_len,
+                 fmt_payload,
+                 tem,
+                 hum,
+                 cur_weight,
+                 box_used,
+                 Sensor_Logic_GetState(),
+                 Sensor_Logic_StateName(),
+                 Sensor_Logic_GetFaultCode(),
+                 Sensor_Logic_FaultName(),
+                 mqtt_is_link_online(),
+                 Sensor_Logic_IsBinFull(),
+                 Sensor_Logic_IsProtectActive());
 
     topic_len = strlen(fmt) + strlen(DEMO_PRODUCT_KEY) + strlen(DEMO_DEVICE_NAME) + 1;
     topic = HAL_Malloc(topic_len);
     if (topic == NULL) {
         EXAMPLE_TRACE("memory not enough");
+        HAL_Free(payload);
         return -1;
     }
     memset(topic, 0, topic_len);
@@ -183,12 +207,16 @@ int my_publish(void *handle)
 
 void example_event_handle(void *pcontext, void *pclient, iotx_mqtt_event_msg_pt msg)
 {
-    EXAMPLE_TRACE("msg->event_type : %d", msg->event_type);
+    RT_UNUSED(pcontext);
+    RT_UNUSED(pclient);
 
     if (msg->event_type == IOTX_MQTT_EVENT_DISCONNECT)
     {
         mqtt_set_link_state(RT_FALSE);
-        EXAMPLE_TRACE("mqtt link offline, local fsm keeps running");
+    }
+    else if (msg->event_type == IOTX_MQTT_EVENT_RECONNECT)
+    {
+        mqtt_set_link_state(RT_TRUE);
     }
 }
 

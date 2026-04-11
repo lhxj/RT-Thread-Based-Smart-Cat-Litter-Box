@@ -26,7 +26,7 @@ static litter_fsm_state_t fsm_resolve_idle_or_occupied(const litter_fsm_ctx_t *c
 
 static void fsm_log_bin_full_active(void)
 {
-    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK bin full active\r\n");
+    rt_kprintf(FSM_LOG_PREFIX "BIN_FULL active\r\n");
 }
 
 static void fsm_log_clean_block(const char *reason)
@@ -34,20 +34,42 @@ static void fsm_log_clean_block(const char *reason)
     rt_kprintf(FSM_LOG_PREFIX "INTERLOCK block clean: %s\r\n", reason);
 }
 
-static void fsm_set_fault(litter_fsm_ctx_t *ctx,
-                          litter_fsm_fault_t fault_code,
-                          const char *reason)
+static void fsm_recover_to_state(litter_fsm_ctx_t *ctx,
+                                 litter_fsm_state_t next_state,
+                                 const char *reason)
 {
     if (ctx == RT_NULL)
     {
         return;
     }
 
-    ctx->fault_code = fault_code;
+    if (reason != RT_NULL)
+    {
+        rt_kprintf(FSM_LOG_PREFIX "%s %s -> %s\r\n",
+                   reason,
+                   litter_fsm_fault_name(ctx->fault_code),
+                   litter_fsm_state_name(next_state));
+    }
+
+    ctx->fault_code = FSM_FAULT_NONE;
+    fsm_enter_state(ctx, next_state);
+}
+
+static void fsm_enter_fault(litter_fsm_ctx_t *ctx,
+                            litter_fsm_fault_t fault_code,
+                            const char *reason)
+{
+    if (ctx == RT_NULL)
+    {
+        return;
+    }
+
     if (reason != RT_NULL)
     {
         rt_kprintf(FSM_LOG_PREFIX "%s\r\n", reason);
     }
+
+    ctx->fault_code = fault_code;
 
     if (ctx->state == FSM_STATE_FAULT)
     {
@@ -56,7 +78,9 @@ static void fsm_set_fault(litter_fsm_ctx_t *ctx,
         {
             ctx->ops->on_fault(ctx->fault_code);
         }
-        rt_kprintf(FSM_LOG_PREFIX "FAULT code=%d\r\n", ctx->fault_code);
+        rt_kprintf(FSM_LOG_PREFIX "FAULT active %s(%d)\r\n",
+                   litter_fsm_fault_name(ctx->fault_code),
+                   ctx->fault_code);
         return;
     }
 
@@ -81,8 +105,8 @@ static void fsm_block_clean_for_bin_full(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    fsm_log_clean_block("bin full");
-    fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
+    rt_kprintf(FSM_LOG_PREFIX "BIN_FULL block clean\r\n");
+    fsm_enter_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
 }
 
 static void fsm_try_enter_cleaning(litter_fsm_ctx_t *ctx)
@@ -117,19 +141,9 @@ static void fsm_stop_cleaning_for_protect(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    rt_kprintf(FSM_LOG_PREFIX "INTERLOCK stop cleaning: protect active\r\n");
+    ctx->fault_code = FSM_FAULT_PROTECT_TRIGGER;
+    rt_kprintf(FSM_LOG_PREFIX "PROTECT stop -> SAFE_STOP\r\n");
     fsm_enter_state(ctx, FSM_STATE_SAFE_STOP);
-}
-
-static rt_bool_t fsm_guard_bin_full_recover(litter_fsm_ctx_t *ctx, const char *reason)
-{
-    if ((ctx == RT_NULL) || (ctx->bin_full != RT_TRUE))
-    {
-        return RT_FALSE;
-    }
-
-    fsm_set_fault(ctx, FSM_FAULT_BIN_FULL, reason);
-    return RT_TRUE;
 }
 
 static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
@@ -141,9 +155,10 @@ static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    if (fsm_guard_bin_full_recover(ctx,
-                                   "SAFE_STOP release blocked: bin full") == RT_TRUE)
+    if (ctx->bin_full == RT_TRUE)
     {
+        rt_kprintf(FSM_LOG_PREFIX "SAFE_STOP release blocked: bin full\r\n");
+        fsm_enter_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
         return;
     }
 
@@ -156,9 +171,7 @@ static void fsm_recover_from_safe_stop(litter_fsm_ctx_t *ctx)
         next_state = FSM_STATE_LEAVE_CONFIRM;
     }
 
-    rt_kprintf(FSM_LOG_PREFIX "SAFE_STOP release -> %s\r\n",
-               litter_fsm_state_name(next_state));
-    fsm_enter_state(ctx, next_state);
+    fsm_recover_to_state(ctx, next_state, "SAFE_STOP recover");
 }
 
 static void fsm_handle_reset_recover(litter_fsm_ctx_t *ctx)
@@ -176,16 +189,14 @@ static void fsm_handle_reset_recover(litter_fsm_ctx_t *ctx)
         return;
     }
 
-    if (fsm_guard_bin_full_recover(ctx, "RESET blocked: bin full") == RT_TRUE)
+    if (ctx->bin_full == RT_TRUE)
     {
+        rt_kprintf(FSM_LOG_PREFIX "RESET blocked: bin full\r\n");
         return;
     }
 
-    ctx->fault_code = FSM_FAULT_NONE;
     next_state = fsm_resolve_idle_or_occupied(ctx);
-    rt_kprintf(FSM_LOG_PREFIX "RESET recover -> %s\r\n",
-               litter_fsm_state_name(next_state));
-    fsm_enter_state(ctx, next_state);
+    fsm_recover_to_state(ctx, next_state, "RESET recover");
 }
 
 static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state)
@@ -226,12 +237,14 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
     case FSM_STATE_OCCUPIED:
         ctx->clean_phase = FSM_CLEAN_PHASE_NONE;
         ctx->cleaning_active = RT_FALSE;
+        ctx->fault_code = FSM_FAULT_NONE;
         fsm_motor_stop(ctx);
         break;
 
     case FSM_STATE_LEAVE_CONFIRM:
         ctx->clean_phase = FSM_CLEAN_PHASE_NONE;
         ctx->cleaning_active = RT_FALSE;
+        ctx->fault_code = FSM_FAULT_NONE;
         ctx->deadline_tick = now + rt_tick_from_millisecond(ctx->leave_confirm_ms);
         fsm_motor_stop(ctx);
         break;
@@ -239,12 +252,14 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
     case FSM_STATE_CLEAN_DELAY:
         ctx->clean_phase = FSM_CLEAN_PHASE_NONE;
         ctx->cleaning_active = RT_FALSE;
+        ctx->fault_code = FSM_FAULT_NONE;
         ctx->deadline_tick = now + rt_tick_from_millisecond(ctx->clean_delay_ms);
         fsm_motor_stop(ctx);
         break;
 
     case FSM_STATE_CLEANING:
         ctx->cleaning_active = RT_TRUE;
+        ctx->fault_code = FSM_FAULT_NONE;
         ctx->clean_started_tick = now;
         ctx->phase_started_tick = now;
         ctx->clean_phase = FSM_CLEAN_PHASE_FORWARD;
@@ -278,7 +293,15 @@ static void fsm_enter_state(litter_fsm_ctx_t *ctx, litter_fsm_state_t next_state
     rt_kprintf(FSM_LOG_PREFIX "ENTER %s\r\n", litter_fsm_state_name(next_state));
     if (next_state == FSM_STATE_FAULT)
     {
-        rt_kprintf(FSM_LOG_PREFIX "FAULT code=%d\r\n", ctx->fault_code);
+        rt_kprintf(FSM_LOG_PREFIX "FAULT enter %s(%d)\r\n",
+                   litter_fsm_fault_name(ctx->fault_code),
+                   ctx->fault_code);
+    }
+    else if ((next_state == FSM_STATE_SAFE_STOP) && (ctx->fault_code != FSM_FAULT_NONE))
+    {
+        rt_kprintf(FSM_LOG_PREFIX "SAFE_STOP reason=%s(%d)\r\n",
+                   litter_fsm_fault_name(ctx->fault_code),
+                   ctx->fault_code);
     }
 }
 
@@ -367,7 +390,8 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         break;
 
     case EVT_STALL_OR_TIMEOUT:
-        fsm_set_fault(ctx, FSM_FAULT_CLEAN_TIMEOUT, "FAULT clean timeout");
+        rt_kprintf(FSM_LOG_PREFIX "CLEAN timeout\r\n");
+        fsm_enter_fault(ctx, FSM_FAULT_CLEAN_TIMEOUT, RT_NULL);
         return;
 
     default:
@@ -388,6 +412,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         else if (event == EVT_BIN_FULL)
         {
             fsm_log_bin_full_active();
+            fsm_enter_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
         }
         break;
 
@@ -403,6 +428,7 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         else if (event == EVT_BIN_FULL)
         {
             fsm_log_bin_full_active();
+            fsm_enter_fault(ctx, FSM_FAULT_BIN_FULL, RT_NULL);
         }
         break;
 
@@ -467,6 +493,10 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         {
             fsm_stop_cleaning_for_protect(ctx);
         }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_block_clean_for_bin_full(ctx);
+        }
         else if (event == EVT_CLEAN_DONE)
         {
             fsm_enter_state(ctx, FSM_STATE_IDLE);
@@ -482,6 +512,10 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         {
             fsm_recover_from_safe_stop(ctx);
         }
+        else if (event == EVT_BIN_FULL)
+        {
+            fsm_log_bin_full_active();
+        }
         else if (event == EVT_RESET)
         {
             fsm_handle_reset_recover(ctx);
@@ -489,6 +523,10 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event)
         break;
 
     case FSM_STATE_FAULT:
+        if (event == EVT_BIN_FULL)
+        {
+            fsm_log_bin_full_active();
+        }
         if (event == EVT_RESET)
         {
             fsm_handle_reset_recover(ctx);
@@ -523,6 +561,14 @@ void litter_fsm_tick(litter_fsm_ctx_t *ctx)
     if ((ctx->state == FSM_STATE_SAFE_STOP) && (ctx->protect_active == RT_FALSE))
     {
         litter_fsm_dispatch(ctx, EVT_PROTECT_RELEASE);
+        return;
+    }
+
+    if ((ctx->state == FSM_STATE_FAULT) &&
+        (ctx->fault_code == FSM_FAULT_BIN_FULL) &&
+        (ctx->bin_full == RT_FALSE))
+    {
+        fsm_recover_to_state(ctx, fsm_resolve_idle_or_occupied(ctx), "FAULT clear");
         return;
     }
 
@@ -590,6 +636,26 @@ int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx)
     return ctx->fault_code;
 }
 
+rt_bool_t litter_fsm_is_bin_full(const litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return RT_FALSE;
+    }
+
+    return ctx->bin_full;
+}
+
+rt_bool_t litter_fsm_is_protect_active(const litter_fsm_ctx_t *ctx)
+{
+    if (ctx == RT_NULL)
+    {
+        return RT_FALSE;
+    }
+
+    return ctx->protect_active;
+}
+
 const char *litter_fsm_state_name(litter_fsm_state_t state)
 {
     switch (state)
@@ -639,5 +705,22 @@ const char *litter_fsm_event_name(litter_fsm_event_t event)
         return "EVT_RESET";
     default:
         return "EVT_NONE";
+    }
+}
+
+const char *litter_fsm_fault_name(int fault_code)
+{
+    switch ((litter_fsm_fault_t)fault_code)
+    {
+    case FSM_FAULT_NONE:
+        return "NONE";
+    case FSM_FAULT_BIN_FULL:
+        return "BIN_FULL";
+    case FSM_FAULT_CLEAN_TIMEOUT:
+        return "CLEAN_TIMEOUT";
+    case FSM_FAULT_PROTECT_TRIGGER:
+        return "PROTECT_TRIGGER";
+    default:
+        return "UNKNOWN";
     }
 }

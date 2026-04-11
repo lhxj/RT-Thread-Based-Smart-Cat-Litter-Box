@@ -34,6 +34,7 @@ typedef enum
     FSM_FAULT_NONE = 0,
     FSM_FAULT_BIN_FULL,
     FSM_FAULT_CLEAN_TIMEOUT,
+    FSM_FAULT_PROTECT_TRIGGER,
 } litter_fsm_fault_t;
 
 typedef enum
@@ -82,7 +83,10 @@ void litter_fsm_dispatch(litter_fsm_ctx_t *ctx, litter_fsm_event_t event);
 void litter_fsm_tick(litter_fsm_ctx_t *ctx);
 litter_fsm_state_t litter_fsm_get_state(const litter_fsm_ctx_t *ctx);
 int litter_fsm_get_fault_code(const litter_fsm_ctx_t *ctx);
+rt_bool_t litter_fsm_is_bin_full(const litter_fsm_ctx_t *ctx);
+rt_bool_t litter_fsm_is_protect_active(const litter_fsm_ctx_t *ctx);
 const char *litter_fsm_state_name(litter_fsm_state_t state);
 const char *litter_fsm_event_name(litter_fsm_event_t event);
+const char *litter_fsm_fault_name(int fault_code);
 
 #endif /* APPLICATIONS_APP_LOGIC_FSM_H_ */
