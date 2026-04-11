@@ -498,11 +498,31 @@ static void litter_status(void)
 }
 MSH_CMD_EXPORT(litter_status, show litter box state/fault/link status);
 
+static void litter_clean(void)
+{
+    Sensor_Logic_RequestClean();
+}
+MSH_CMD_EXPORT(litter_clean, queue a local clean request through the FSM);
+
 static void litter_reset(void)
 {
     Sensor_Logic_RequestReset();
 }
 MSH_CMD_EXPORT(litter_reset, request local litter fault recover);
+
+static void litter_timeout(void)
+{
+    if (Sensor_Logic_GetState() != FSM_STATE_CLEANING)
+    {
+        rt_kprintf("litter_timeout ignored: state=%s (need CLEANING)\r\n",
+                   Sensor_Logic_StateName());
+        return;
+    }
+
+    rt_kprintf("[LOGIC] inject clean timeout fault\r\n");
+    litter_fsm_dispatch(&g_fsm_ctx, EVT_STALL_OR_TIMEOUT);
+}
+MSH_CMD_EXPORT(litter_timeout, inject clean timeout fault while cleaning for local debug);
 #endif
 
 /* sensor control logic */
